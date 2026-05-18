@@ -50,7 +50,7 @@ WORD_LIST = [
     "inner","input","issue","ivory","japan","jelly","jewel","joint","joker","joust",
     "judge","juice","juicy","jumbo","jumpy","keeps","knife","knock","known","label",
     "lance","laser","later","lemon","level","light","limit","liner","local","lodge",
-    "logic","login","lonely","loose","lousy","lover","lower","lucky","lunar","lyric",
+    "logic","login","loose","lousy","lover","lower","lucky","lunar","lyric",
     "magic","major","maker","manor","maple","march","match","media","mercy","merge",
     "merit","metal","mirth","model","moose","moral","morph","motor","mount","mouse",
     "mouth","movie","mural","music","naive","naval","nerve","never","night","noble",
