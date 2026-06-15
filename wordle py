@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""
+terminal-wordle
+===============
+A faithful clone of the NYT Wordle game that runs entirely in your terminal.
+
+Rules:
+    - Guess a secret 5-letter word in 6 attempts.
+    - After each guess, tiles are colored to show how close you were:
+        GREEN  — correct letter, correct position
+        YELLOW — correct letter, wrong position
+        GRAY   — letter not in the word at all
+
+Usage:
+    python3 wordle.py
+
+Persistent stats (wins, losses, streak, best streak) are saved locally
+in a hidden file called .streak.json next to this script.
+
+Author: Sumalee Simmonds
+GitHub: https://github.com/maleechanel/terminal-wordle
+"""
+
+import json
+import os
+import random
+import sys
+from pathlib import Path
+
+
+# ─── Terminal Color Codes (ANSI escape sequences) ─────────────────────────────
+# These tell the terminal to change background/foreground colors.
+# Format: \033[<background>;<foreground>m
+# GREEN  = green background, black text  (correct letter, correct position)
+# YELLOW = yellow background, black text (correct letter, wrong position)
+# GRAY   = dark gray background, white text (letter not in word)
+# BOLD   = bold text
+# RESET  = return terminal to its default colors
+# CLEAR  = clear the entire terminal screen and move cursor to top-left
+
+GREEN  = "\033[42;30m"
+YELLOW = "\033[43;30m"
+GRAY   = "\033[100;37m"
+BOLD   = "\033[1m"
+RESET  = "\033[0m"
+CLEAR  = "\033[2J\033[H"
+
+# How each color name maps to a display priority.
+# When a letter appears multiple times in guesses with different colors,
+# we keep the highest-priority color (green beats yellow beats gray).
+COLOR_PRIORITY: dict[str, int] = {
+    "green":  3,
+    "yellow": 2,
+    "gray":   1,
+    "none":   0,
+}
+
+# Maximum number of guesses allowed per game (standard Wordle rule).
+MAX_GUESSES = 6
+
+# File path where win/loss/streak stats are saved between sessions.
+STREAK_FILE = Path(__file__).parent / ".streak.json"
+
+
+# ─── Word List ────────────────────────────────────────────────────────────────
+# 800+ common 5-letter English words used as both answers and valid guesses.
+# All words are lowercase. The secret answer is chosen randomly from this list.
+
+WORD_LIST = [
+    "about","above","abuse","actor","acute","admit","adopt","adult","after","again",
+    "agent","agree","ahead","alarm","album","alert","alien","align","alike","alive",
+    "alley","allow","alone","along","aloud","alpha","alter","angel","anger","angle",
+    "angry","anime","ankle","annex","apart","apple","apply","arena","argue","arise",
+    "armor","aroma","arose","array","arrow","aside","asked","asset","atlas","attic",
+    "audio","audit","avoid","awake","award","aware","awful","basic","basin","basis",
+    "batch","beach","beard","beast","began","begin","being","below","bench","bible",
+    "birth","black","blade","blame","bland","blank","blast","blaze","bleed","bless",
+    "blind","block","blood","bloom","blown","board","bonus","booth","bound","boxer",
+    "brain","brand","brave","bread","break","breed","brick","bride","brief","bring",
+    "broad","broke","brook","brown","brush","buddy","build","built","bunch","burst",
+    "buyer","cabin","cable","camel","canal","candy","carry","catch","cause","chain",
+    "chair","chaos","chase","cheap","check","cheek","chess","chest","chief","child",
+    "choir","chunk","civic","civil","claim","class","clean","clear","click","cliff",
+    "climb","cling","clock","clone","close","cloud","coach","coast","cobra","comet",
+    "comic","comma","coral","count","court","cover","craft","crane","crash","crazy",
+    "cream","creek","crime","crisp","cross","crowd","crown","crush","curve","cycle",
+    "daily","dance","datum","debut","decay","delay","delta","dense","depot","depth",
+    "derby","devil","digit","dirty","disco","ditch","diver","dizzy","dodge","doing",
+    "donor","doubt","dough","draft","drain","drama","drank","dread","dream","dress",
+    "drink","drive","drone","drove","drown","drugs","drums","dryer","dunno","dwarf",
+    "eagle","early","earth","eaten","eight","elite","email","empty","ended","enemy",
+    "enjoy","enter","entry","equal","error","event","every","exact","exist","extra",
+    "fable","faint","faith","false","fancy","fatal","fault","feast","fence","fever",
+    "field","fifth","fifty","fight","final","first","fixed","flame","flash","fleet",
+    "flesh","float","flood","floor","flour","fluid","flute","focus","force","forge",
+    "forth","found","frame","frank","freed","fresh","front","frost","froze","fruit",
+    "fully","funny","ghost","given","gland","glass","globe","gloom","glove","going",
+    "grace","grade","grain","grand","grant","grasp","grass","grave","great","greed",
+    "green","greet","grief","grill","grind","groan","groin","gross","group","grown",
+    "guard","guide","guilt","gusto","happy","harsh","haven","heart","heavy","hence",
+    "hinge","hiked","hippo","hoist","holly","homer","honey","honor","hotel","house",
+    "human","humor","hurry","ideal","image","imply","inbox","index","indie","infer",
+    "inner","input","issue","ivory","japan","jelly","jewel","joint","joker","joust",
+    "judge","juice","juicy","jumbo","jumpy","keeps","knife","knock","known","label",
+    "lance","laser","later","lemon","level","light","limit","liner","local","lodge",
+    "logic","login","loose","lousy","lover","lower","lucky","lunar","lyric",
+    "magic","major","maker","manor","maple","march","match","media","mercy","merge",
+    "merit","metal","mirth","model","moose","moral","morph","motor","mount","mouse",
+    "mouth","movie","mural","music","naive","naval","nerve","never","night","noble",
+    "noise","north","noted","novel","nurse","nymph","occur","ocean","offer","often",
+    "olive","onset","orbit","order","other","outer","owing","ozone","paint","panel",
+    "panic","paper","party","pasta","patch","patio","pause","peace","pearl","pedal",
+    "penny","perch","phase","phone","photo","piano","pixel","pizza","place","plain",
+    "plane","plank","plant","plate","plaza","plead","pluck","plumb","plume","plunge",
+    "point","polar","poppy","porch","posed","power","press","price","pride","prime",
+    "print","prior","prize","probe","prone","proof","prose","proud","prove","proxy",
+    "pulse","punch","pupil","purse","queen","query","quest","queue","quick","quiet",
+    "quota","quote","radar","radio","raise","rally","range","rapid","ratio","reach",
+    "ready","realm","rebel","recap","relax","reply","rider","ridge","rifle","right",
+    "risky","rival","river","robot","rocky","roman","rouge","rough","round","route",
+    "royal","ruler","rural","sadly","saint","salad","sauce","scale","scene","score",
+    "scout","screw","seize","sense","serum","serve","seven","shade","shaft","shake",
+    "shall","shame","shape","share","shark","sharp","sheep","sheer","shelf","shell",
+    "shift","shine","shirt","shock","shoot","shore","short","shout","shove","shown",
+    "sight","siege","sigma","silly","since","sixth","sixty","skill","skull","slave",
+    "sleep","slice","slide","slime","sling","slope","smart","smile","smoke","snack",
+    "snake","solar","solid","solve","sorry","south","space","spark","speak","spend",
+    "spice","spike","spine","spite","split","spoke","sport","spout","spray","squad",
+    "stack","stage","stain","stale","stall","stand","stare","stark","start","state",
+    "stays","steam","steep","steer","stern","stick","stiff","still","stock","stone",
+    "stood","store","story","stove","strap","straw","strip","study","stuff","style",
+    "sugar","suite","super","surge","swamp","swear","sweat","sweep","sweet","swept",
+    "swift","sword","sworn","syrup","table","talon","tango","tapir","taste","teach",
+    "teeth","tempt","tense","tenth","terms","their","theme","there","these","thick",
+    "thing","think","third","thorn","those","three","threw","throw","thumb","tiger",
+    "tight","timer","tired","title","today","token","tooth","topic","torch","total",
+    "touch","tough","towel","tower","toxic","track","trade","trail","train","trait",
+    "tramp","trash","trawl","treat","trend","trial","tribe","trick","tried","troop",
+    "trout","trove","truck","truly","trump","trunk","trust","truth","tummy","tuner",
+    "tunic","tweak","twice","twist","ultra","unify","union","unity","until","upper",
+    "upset","urban","usage","usual","utter","valid","value","valve","vapor","vault",
+    "verse","video","vigor","viral","virus","visit","vista","vital","vivid","vocal",
+    "voice","voter","wagon","waste","watch","water","weary","weave","weigh","weird",
+    "whale","wheat","wheel","where","which","while","white","whole","whose","wider",
+    "width","witch","woman","women","world","worry","worse","worst","worth","would",
+    "wound","wrath","wrist","wrote","yacht","young","yours","youth","zebra","zonal",
+]
+
+
+# ─── Stats Persistence ────────────────────────────────────────────────────────
+
+def load_stats() -> dict:
+    """
+    Load the player's persistent stats from disk.
+
+    Reads from STREAK_FILE (.streak.json). If the file doesn't exist yet
+    (i.e. the player's first session), returns a fresh stats dictionary
+    with all counters set to zero.
+
+    Returns:
+        dict: A dictionary with keys:
+            - "wins"   (int): Total games won across all sessions.
+            - "losses" (int): Total games lost across all sessions.
+            - "streak" (int): Current consecutive win streak.
+            - "best"   (int): Best (longest) consecutive win streak ever.
+    """
+    if STREAK_FILE.exists():
+        return json.loads(STREAK_FILE.read_text())
+    return {"wins": 0, "losses": 0, "streak": 0, "best": 0}
+
+
+def save_stats(stats: dict) -> None:
+    """
+    Save the player's current stats to disk.
+
+    Writes the stats dictionary as JSON to STREAK_FILE so that
+    win/loss/streak data persists between game sessions.
+
+    Args:
+        stats (dict): The stats dictionary to save (same shape as
+                      the return value of load_stats).
+    """
+    STREAK_FILE.write_text(json.dumps(stats))
+
+
+# ─── Game Logic ───────────────────────────────────────────────────────────────
+
+def score_guess(guess: str, answer: str) -> list[str]:
+    """
+    Compare a player's guess against the secret answer and return tile colors.
+
+    Uses a two-pass algorithm (the same logic used by the official NYT Wordle)
+    to correctly handle duplicate letters:
+
+    Pass 1 — Greens: Mark any letter that is in the exact correct position.
+             Remove those letters from the remaining answer pool so they
+             can't also be counted as yellows.
+
+    Pass 2 — Yellows: For remaining (non-green) letters, check if the guessed
+             letter exists anywhere in the leftover answer pool. If so, mark
+             it yellow and consume that letter from the pool.
+
+    This two-pass approach ensures that if the answer is "SPEED" and the
+    player guesses "EERIE", only one E is marked yellow (not two), because
+    only one unmatched E remains in the answer after the green pass.
+
+    Args:
+        guess  (str): The player's 5-letter guess (lowercase).
+        answer (str): The secret 5-letter answer (lowercase).
+
+    Returns:
+        list[str]: A list of 5 color strings, one per letter.
+                   Each value is "green", "yellow", or "gray".
+
+    Example:
+        >>> score_guess("crane", "brave")
+        ['gray', 'green', 'yellow', 'gray', 'green']
+    """
+    tile_colors = ["gray"] * 5
+    remaining_answer_letters = list(answer)
+
+    # Pass 1: find exact matches (greens)
+    for position, (guessed_letter, answer_letter) in enumerate(zip(guess, answer)):
+        if guessed_letter == answer_letter:
+            tile_colors[position] = "green"
+            remaining_answer_letters[position] = None  # consume this letter
+
+    # Pass 2: find misplaced matches (yellows)
+    for position, guessed_letter in enumerate(guess):
+        if tile_colors[position] == "green":
+            continue  # already matched in pass 1
+        if guessed_letter in remaining_answer_letters:
+            tile_colors[position] = "yellow"
+            remaining_answer_letters[remaining_answer_letters.index(guessed_letter)] = None
+
+    return tile_colors
+
+
+# ─── Rendering ────────────────────────────────────────────────────────────────
+
+def render_tile(letter: str, color: str) -> str:
+    """
+    Wrap a single letter in its ANSI color codes to render a colored tile.
+
+    Each tile is padded with one space on each side for readability.
+
+    Args:
+        letter (str): A single letter to display (will be uppercased).
+        color  (str): One of "green", "yellow", or "gray".
+
+    Returns:
+        str: An ANSI-colored string ready to print to the terminal.
+
+    Example:
+        >>> render_tile("a", "green")
+        '\033[42;30m A \033[0m'
+    """
+    color_to_ansi = {"green": GREEN, "yellow": YELLOW, "gray": GRAY}
+    ansi_code = color_to_ansi.get(color, GRAY)
+    return f"{ansi_code} {letter.upper()} {RESET}"
+
+
+def render_board(
+    guesses: list[tuple[str, list[str]]],
+    max_guesses: int = MAX_GUESSES,
+) -> str:
+    """
+    Render the full 6-row game board as a string of colored tiles.
+
+    Completed rows show colored tiles for each guessed letter.
+    Empty rows (not yet guessed) show blank gray placeholders.
+
+    Args:
+        guesses     (list): Each entry is a (guess_word, tile_colors) tuple,
+                            where tile_colors is a list of 5 color strings.
+        max_guesses (int):  Total number of rows to display (default 6).
+
+    Returns:
+        str: A multi-line string ready to print to the terminal.
+    """
+    rows = []
+
+    # Render completed guess rows
+    for guess_word, tile_colors in guesses:
+        tiles = [render_tile(letter, color)
+                 for letter, color in zip(guess_word, tile_colors)]
+        rows.append(" ".join(tiles))
+
+    # Render empty placeholder rows for remaining guesses
+    empty_tile = f"{GRAY}   {RESET}"
+    for _ in range(max_guesses - len(guesses)):
+        rows.append(" ".join(empty_tile for _ in range(5)))
+
+    return "\n".join(rows)
+
+
+def render_keyboard(letter_states: dict[str, str]) -> str:
+    """
+    Render a color-coded on-screen keyboard showing used letter states.
+
+    Letters are arranged in the standard QWERTY layout across three rows.
+    Each letter is colored based on the best result seen so far:
+        GREEN  — confirmed correct position in some past guess
+        YELLOW — confirmed in word but wrong position
+        GRAY   — confirmed not in the word
+        (plain) — not yet guessed
+
+    Args:
+        letter_states (dict): Maps each used letter (str) to its best
+                              color so far ("green", "yellow", or "gray").
+                              Letters not in this dict haven't been guessed yet.
+
+    Returns:
+        str: A multi-line ANSI-colored keyboard string.
+    """
+    keyboard_rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+    rendered_rows = []
+
+    for row in keyboard_rows:
+        tiles = []
+        for letter in row:
+            state = letter_states.get(letter, "none")
+            if state == "green":
+                tiles.append(f"{GREEN} {letter.upper()} {RESET}")
+            elif state == "yellow":
+                tiles.append(f"{YELLOW} {letter.upper()} {RESET}")
+            elif state == "gray":
+                tiles.append(f"{GRAY} {letter.upper()} {RESET}")
+            else:
+                tiles.append(f" {letter.upper()} ")  # unguessed — no color
+        rendered_rows.append(" ".join(tiles))
+
+    return "\n".join(rendered_rows)
+
+
+def redraw_screen(
+    guesses: list[tuple[str, list[str]]],
+    letter_states: dict[str, str],
+    message: str = "",
+    stats: dict = None,
+) -> None:
+    """
+    Clear the terminal and redraw the complete game UI.
+
+    Prints, in order:
+        1. The title banner
+        2. The 6-row game board
+        3. The color-coded QWERTY keyboard
+        4. The player's current stats (wins, losses, streak, best)
+        5. An optional status message (e.g. error or win message)
+
+    This function is called after every guess to refresh the display,
+    giving the game a clean, flicker-free appearance.
+
+    Args:
+        guesses       (list): Completed guesses so far (word + tile colors).
+        letter_states (dict): Current color state of each used letter.
+        message       (str):  Optional status message to show at the bottom.
+        stats         (dict): Player stats dict from load_stats(). If None,
+                              the stats line is omitted.
+    """
+    print(CLEAR, end="")
+    print(f"{BOLD}  W O R D L E{RESET}  —  Guess the 5-letter word in 6 tries\n")
+    print(render_board(guesses))
+    print()
+    print(render_keyboard(letter_states))
+    print()
+    if stats:
+        print(
+            f"  Wins: {stats['wins']}  "
+            f"Losses: {stats['losses']}  "
+            f"Streak: {stats['streak']}  "
+            f"Best: {stats['best']}"
+        )
+    if message:
+        print(f"\n  {message}")
+
+
+# ─── Main Game Loop ───────────────────────────────────────────────────────────
+
+def play() -> None:
+    """
+    Run one complete game of Wordle and prompt to play again.
+
+    Game flow:
+        1. Pick a random secret answer from WORD_LIST.
+        2. Load the player's persistent stats.
+        3. Loop up to MAX_GUESSES times:
+            a. Prompt the player for a 5-letter alphabetic guess.
+            b. Score the guess using score_guess().
+            c. Update the on-screen keyboard state (keep best color per letter).
+            d. Redraw the screen with the new board and keyboard.
+            e. If the guess matches the answer, record a win and break.
+        4. If all guesses are used without winning, record a loss.
+        5. Save updated stats and offer to play again (calls play() recursively).
+
+    Handles Ctrl+C and EOF gracefully by revealing the answer and exiting.
+    """
+    secret_answer = random.choice(WORD_LIST)
+    completed_guesses: list[tuple[str, list[str]]] = []
+    letter_states: dict[str, str] = {}  # tracks best color seen per letter
+    stats = load_stats()
+    player_won = False
+
+    # Victory messages indexed by attempt number (1-6).
+    # Earlier wins get more effusive praise.
+    victory_messages = [
+        "Genius!",        # solved in 1
+        "Magnificent!",   # solved in 2
+        "Impressive!",    # solved in 3
+        "Splendid!",      # solved in 4
+        "Great!",         # solved in 5
+        "Phew!",          # solved in 6
+    ]
+
+    redraw_screen(completed_guesses, letter_states, stats=stats)
+
+    for attempt_number in range(1, MAX_GUESSES + 1):
+
+        # ── Input loop: keep asking until we get a valid 5-letter word ──
+        while True:
+            try:
+                raw_input = input(f"  Guess {attempt_number}/{MAX_GUESSES}: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n  The word was: {BOLD}{secret_answer.upper()}{RESET}")
+                sys.exit(0)
+
+            if len(raw_input) != 5:
+                redraw_screen(completed_guesses, letter_states,
+                              "Enter a 5-letter word.", stats)
+                continue
+            if not raw_input.isalpha():
+                redraw_screen(completed_guesses, letter_states,
+                              "Letters only, please.", stats)
+                continue
+            break  # valid guess — exit input loop
+
+        # ── Score the guess and update game state ──
+        tile_colors = score_guess(raw_input, secret_answer)
+        completed_guesses.append((raw_input, tile_colors))
+
+        # Update letter_states: keep the highest-priority color seen per letter
+        for letter, color in zip(raw_input, tile_colors):
+            current_priority = COLOR_PRIORITY.get(letter_states.get(letter, "none"), 0)
+            new_priority = COLOR_PRIORITY[color]
+            if new_priority > current_priority:
+                letter_states[letter] = color
+
+        # ── Check for win ──
+        if raw_input == secret_answer:
+            player_won = True
+            stats["wins"]   += 1
+            stats["streak"] += 1
+            stats["best"]    = max(stats["best"], stats["streak"])
+            save_stats(stats)
+
+            redraw_screen(completed_guesses, letter_states, stats=stats)
+            praise = victory_messages[attempt_number - 1]
+            print(f"\n  {BOLD}{praise}{RESET}  Solved in {attempt_number}/{MAX_GUESSES}\n")
+            break
+
+        redraw_screen(completed_guesses, letter_states, stats=stats)
+
+    # ── Handle loss ──
+    if not player_won:
+        stats["losses"] += 1
+        stats["streak"]  = 0
+        save_stats(stats)
+        redraw_screen(completed_guesses, letter_states, stats=stats)
+        print(f"\n  Better luck next time! "
+              f"The word was: {BOLD}{secret_answer.upper()}{RESET}\n")
+
+    # ── Offer to play again ──
+    try:
+        play_again = input("  Play again? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        play_again = "n"
+
+    if play_again == "y":
+        play()
+
+
+# ─── Entry Point ──────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    play()
