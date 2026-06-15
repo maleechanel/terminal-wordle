@@ -1,0 +1,8 @@
+# Stats file — personal data, don't commit
+.streak.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
